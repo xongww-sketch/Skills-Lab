@@ -11,7 +11,7 @@ description: "从售后未激活 Excel 生成 INSERT SQL，插入 activation_rec
 
 1. **解析 Excel** — 提取 SN、激活时间、地区等字段
 2. **SN→型号映射** — 用前缀匹配规则，输出 `COROS {型号}`
-3. **时间戳转换** — Excel 日期 → Unix 时间戳 + 1462 天偏移
+3. **时间戳转换** — 激活日期 → 按 Asia/Shanghai 当天 00:00:00 转秒级 Unix 时间戳（无偏移）
 4. **生成 SQL** — INSERT INTO activation_records，带 WHERE NOT EXISTS 去重
 5. **输出 .sql 文件** — 发送给用户
 
@@ -41,13 +41,27 @@ description: "从售后未激活 Excel 生成 INSERT SQL，插入 activation_rec
 
 ## 时间戳转换
 
-公式：`activatetime = 标准 Unix 时间戳 + 126316800`（即 +1462 天）
+**口径：把激活日期当作 Asia/Shanghai 时区的当天 00:00:00，转成秒级 Unix 时间戳。不加任何偏移。**
 
-验证基准：`2025-12-21` → `1892592000`
+验证基准：`2025-12-21` → `1766246400`（= 2025-12-21 00:00:00 +08:00）
 
-对于 Excel 日期序列号：`activatetime = (Excel日期值 - DATE(1970,1,1) + 1462) * 86400`
+转换方式：
+- **文本日期**（如 `2025-12-21` 或 `2025-12-21 00:00:00`）：按 Asia/Shanghai 解析该日期 00:00:00，取 Unix 秒。
+- **Excel 日期序列号**（如 `45626`）：先还原为日期（Excel 序列号 = 从 1899-12-30 起的天数），再按上面文本日期的方式转 Asia/Shanghai 秒级。
 
-对于文本日期（如 `2025-12-21`）：先转 Unix 时间戳（UTC 午夜），再加 126316800。
+Python 参考：
+```python
+import datetime, zoneinfo
+tz = zoneinfo.ZoneInfo("Asia/Shanghai")
+ts = int(datetime.datetime.strptime("2025-12-21", "%Y-%m-%d").replace(tzinfo=tz).timestamp())
+# ts == 1766246400
+```
+
+PostgreSQL 参考（如直接在 SQL 里算）：
+```sql
+EXTRACT(EPOCH FROM ('2025-12-21'::date)::timestamp AT TIME ZONE 'Asia/Shanghai')::bigint
+-- = 1766246400
+```
 
 ## SQL 模板
 
@@ -74,4 +88,4 @@ WHERE NOT EXISTS (
 
 - 未匹配的 SN 单独列出，提示用户确认是否需要补充映射规则
 - 海外/国内分开生成 VALUES 块，合并到同一 SQL 文件
-- 时间戳务必验证：用已知日期反算确认偏移正确
+- 时间戳务必验证：用已知日期核对（`2025-12-21` 应为 `1766246400`），确认是 Asia/Shanghai 当天午夜、无偏移
